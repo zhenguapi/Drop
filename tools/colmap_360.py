@@ -192,6 +192,7 @@ def pipeline(scene, base_path, n_views):
 
 
 for scene in ['bicycle', 'bonsai', 'counter', 'garden',  'kitchen', 'room', 'stump']:
-    pipeline(scene, base_path = '/ssd1/zehao/FSGS/dataset/mipnerf360/', n_views = 24)  # please use absolute path!
+    # pipeline(scene, base_path = '/ssd1/zehao/FSGS/dataset/mipnerf360/', n_views = 24)  # please use absolute path!
+    pipeline(scene, base_path = '/root/autodl-tmp/Mip-NeRF360/360_v2/', n_views = 12)  # please use absolute path!
 
 

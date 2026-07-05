@@ -1,6 +1,7 @@
 exp_name='mip12'
-scenes=("bicycle" "bonsai" "counter" "garden" "kitchen" "room" "stump")
-dataset_path='dataset/mipnerf360'
+# scenes=("bicycle" "bonsai" "counter" "garden" "kitchen" "room" "stump") 
+scenes=("bicycle" "bonsai" "counter" "garden") # 12 views 
+dataset_path='/root/autodl-tmp/Mip-NeRF360/360_v2/'
 n_views=12
 
 for scene in "${scenes[@]}"

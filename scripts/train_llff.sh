@@ -1,6 +1,6 @@
 exp_name='llff3'
 scenes=("fern" "flower" "fortress" "horns" "leaves" "orchids" "room" "trex")
-dataset_path='dataset/nerf_llff_data'
+dataset_path='/root/autodl-tmp/nerf_llff_data/'
 n_views=3
 
 for scene in "${scenes[@]}"

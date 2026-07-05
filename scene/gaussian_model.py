@@ -407,3 +407,51 @@ class GaussianModel:
         self.xyz_gradient_accum[update_filter] += torch.norm(viewspace_point_tensor.grad[update_filter,:2], dim=-1, keepdim=True)
         self.denom[update_filter] += 1
 
+    def compute_importance_scores(self):
+        """
+        Compute per-Gaussian importance scores for adaptive dropout.
+
+        Two signals, no depth prior needed:
+        1. Gradient activity: large view-space gradient → actively learning → important
+        2. Local density:    small nearest-neighbor distance → crowded → redundant
+
+        Returns:
+            importance: Tensor of shape (N,) in [0, 1], higher = more important
+        """
+        N = self.get_xyz.shape[0]
+
+        # ---- Signal 1: gradient activity ----
+        # xyz_gradient_accum / denom = mean gradient norm per Gaussian
+        if self.denom.sum() > 0:
+            grad_active = self.xyz_gradient_accum / (self.denom + 1e-8)
+            grad_active = grad_active.squeeze()
+        else:
+            grad_active = torch.zeros(N, device="cuda")
+
+        g_max = grad_active.max()
+        if g_max > 1e-8:
+            grad_active = grad_active / g_max
+        else:
+            grad_active = torch.zeros(N, device="cuda")
+
+        # ---- Signal 2: local density ----
+        # distCUDA2 returns squared distance to nearest neighbor (already imported)
+        nn_dist = distCUDA2(self.get_xyz)
+        nn_dist = torch.clamp_min(nn_dist, 1e-8)
+        density = 1.0 / nn_dist  # small distance → high density
+
+        d_max = density.max()
+        if d_max > 1e-8:
+            density = density / d_max
+        else:
+            density = torch.zeros(N, device="cuda")
+
+        # ---- Combine ----
+        # High grad → important.  High density → redundant.
+        # Read alpha from env var ALPHA_GRAD (default 0.5 for combined)
+        alpha = float(os.environ.get("ALPHA_GRAD", 0.5))
+        importance = alpha * grad_active + (1.0 - alpha) * (1.0 - density)
+        importance = torch.clamp(importance, 0.0, 1.0)
+
+        return importance
+

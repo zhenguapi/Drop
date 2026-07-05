@@ -83,17 +83,27 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
     else:
         colors_precomp = override_color
 
-    # DropGaussian
+    # ============================================================
+    # Adaptive Importance Dropout (replaces blind DropGaussian dropout)
+    # ============================================================
     if is_train:
-        # Create initial compensation factor (1 for each Gaussian)
-        compensation = torch.ones(opacity.shape[0], dtype=torch.float32, device="cuda")
+        # Base dropout rate (same schedule as original DropGaussian)
+        base_drop_rate = 0.2 * (iteration / 10000)
 
-        # Apply DropGaussian with compensation
-        drop_rate = 0.2 * (iteration/10000)
-        d = torch.nn.Dropout(p=drop_rate)
-        compensation = d(compensation)
+        # Get per-Gaussian importance scores
+        importance = pc.compute_importance_scores()  # shape: (N,), in [0, 1]
 
-        # Apply to opacity
+        # Important Gaussians → lower dropout rate; redundant Gaussians → higher
+        # importance → 1: drop_rate → 0 (fully protected)
+        # importance → 0: drop_rate → base_drop_rate (full dropout)
+        per_gaussian_drop_rate = base_drop_rate * (1.0 - importance)
+
+        # Bernoulli sampling + compensation (same principle as original)
+        keep_prob = 1.0 - per_gaussian_drop_rate
+        keep_prob = torch.clamp(keep_prob, min=1e-8)  # avoid division by zero
+        mask = torch.bernoulli(keep_prob)              # 1=keep, 0=drop
+        compensation = mask / keep_prob                # survivors get boosted
+
         opacity = opacity * compensation[:, None]
 
     # Rasterize visible Gaussians to image, obtain their radii (on screen). 
