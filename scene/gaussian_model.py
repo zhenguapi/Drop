@@ -53,6 +53,7 @@ class GaussianModel:
         self.max_radii2D = torch.empty(0)
         self.xyz_gradient_accum = torch.empty(0)
         self.denom = torch.empty(0)
+        self.opacity_grad_cache = torch.empty(0)
         self.optimizer = None
         self.percent_dense = 0
         self.spatial_lr_scale = 0
@@ -70,6 +71,7 @@ class GaussianModel:
             self.max_radii2D,
             self.xyz_gradient_accum,
             self.denom,
+            self.opacity_grad_cache,
             self.optimizer.state_dict(),
             self.spatial_lr_scale,
         )
@@ -82,14 +84,16 @@ class GaussianModel:
         self._scaling, 
         self._rotation, 
         self._opacity,
-        self.max_radii2D, 
-        xyz_gradient_accum, 
+        self.max_radii2D,
+        xyz_gradient_accum,
         denom,
-        opt_dict, 
+        opacity_grad_cache,
+        opt_dict,
         self.spatial_lr_scale) = model_args
         self.training_setup(training_args)
         self.xyz_gradient_accum = xyz_gradient_accum
         self.denom = denom
+        self.opacity_grad_cache = opacity_grad_cache
         self.optimizer.load_state_dict(opt_dict)
 
     @property
@@ -150,6 +154,7 @@ class GaussianModel:
         self.percent_dense = training_args.percent_dense
         self.xyz_gradient_accum = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
         self.denom = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
+        self.opacity_grad_cache = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
 
         l = [
             {'params': [self._xyz], 'lr': training_args.position_lr_init * self.spatial_lr_scale, "name": "xyz"},
@@ -303,6 +308,7 @@ class GaussianModel:
 
         self.denom = self.denom[valid_points_mask]
         self.max_radii2D = self.max_radii2D[valid_points_mask]
+        self.opacity_grad_cache = self.opacity_grad_cache[valid_points_mask]
 
     def cat_tensors_to_optimizer(self, tensors_dict):
         optimizable_tensors = {}
@@ -346,6 +352,8 @@ class GaussianModel:
         self.denom = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
         self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")
         self.max_radii2D = torch.cat([self.max_radii2D, torch.zeros(self.get_xyz.shape[0]-self.max_radii2D.shape[0]).to(self.max_radii2D)])
+        # Opacity grad cache: reset for new Gaussians (they have 0 gradient history)
+        self.opacity_grad_cache = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
 
     def densify_and_split(self, grads, grad_threshold, scene_extent, N=2):
         n_init_points = self.get_xyz.shape[0]
@@ -407,21 +415,41 @@ class GaussianModel:
         self.xyz_gradient_accum[update_filter] += torch.norm(viewspace_point_tensor.grad[update_filter,:2], dim=-1, keepdim=True)
         self.denom[update_filter] += 1
 
+    def cache_opacity_gradient(self, ema_decay=0.9):
+        """
+        Cache the current opacity gradient with EMA smoothing.
+        Called from train.py after loss.backward(), before optimizer.zero_grad().
+
+        The EMA-smoothed |∂L/∂α| measures functional redundancy:
+          - Large |∂L/∂α| → this Gaussian's opacity matters uniquely → important
+          - Small |∂L/∂α| → other Gaussians can substitute → redundant
+        """
+        if self._opacity.grad is not None:
+            grad_abs = self._opacity.grad.detach().abs()
+            # Handle case where cache size doesn't match (e.g., newly loaded checkpoint)
+            if self.opacity_grad_cache.shape[0] != grad_abs.shape[0]:
+                self.opacity_grad_cache = grad_abs.clone()
+            else:
+                self.opacity_grad_cache = (
+                    ema_decay * self.opacity_grad_cache + (1.0 - ema_decay) * grad_abs
+                )
+
     def compute_importance_scores(self):
         """
         Compute per-Gaussian importance scores for adaptive dropout.
 
-        Two signals, no depth prior needed:
-        1. Gradient activity: large view-space gradient → actively learning → important
-        2. Local density:    small nearest-neighbor distance → crowded → redundant
+        Three signals, all without external priors:
+        1. Position gradient activity: large view-space gradient → actively learning geometry → important
+        2. Opacity gradient (functional redundancy): large |∂L/∂α| → unique contribution, hard to replace
+        3. Local density: small nearest-neighbor distance → crowded → potentially redundant
 
         Returns:
             importance: Tensor of shape (N,) in [0, 1], higher = more important
         """
         N = self.get_xyz.shape[0]
 
-        # ---- Signal 1: gradient activity ----
-        # xyz_gradient_accum / denom = mean gradient norm per Gaussian
+        # ---- Signal 1: position gradient activity ----
+        # Accumulated mean gradient norm (same as 3DGS densification signal)
         if self.denom.sum() > 0:
             grad_active = self.xyz_gradient_accum / (self.denom + 1e-8)
             grad_active = grad_active.squeeze()
@@ -434,8 +462,21 @@ class GaussianModel:
         else:
             grad_active = torch.zeros(N, device="cuda")
 
-        # ---- Signal 2: local density ----
-        # distCUDA2 returns squared distance to nearest neighbor (already imported)
+        # ---- Signal 2: opacity gradient → functional redundancy ----
+        # EMA-smoothed |∂L/∂(_opacity)| from cache_opacity_gradient()
+        if self.opacity_grad_cache.shape[0] == N and self.opacity_grad_cache.max() > 1e-12:
+            op_grad = self.opacity_grad_cache.squeeze()
+        else:
+            op_grad = torch.zeros(N, device="cuda")
+
+        o_max = op_grad.max()
+        if o_max > 1e-8:
+            op_grad = op_grad / o_max
+        else:
+            op_grad = torch.zeros(N, device="cuda")
+
+        # ---- Signal 3: local density (geometric crowding) ----
+        # distCUDA2 returns squared distance to nearest neighbor
         nn_dist = distCUDA2(self.get_xyz)
         nn_dist = torch.clamp_min(nn_dist, 1e-8)
         density = 1.0 / nn_dist  # small distance → high density
@@ -447,10 +488,14 @@ class GaussianModel:
             density = torch.zeros(N, device="cuda")
 
         # ---- Combine ----
-        # High grad → important.  High density → redundant.
-        # Read alpha from env var ALPHA_GRAD (default 0.5 for combined)
-        alpha = float(os.environ.get("ALPHA_GRAD", 0.5))
-        importance = alpha * grad_active + (1.0 - alpha) * (1.0 - density)
+        # α: position gradient weight (geometry learning signal)
+        # β: opacity gradient weight (functional redundancy signal)
+        # γ: density weight (geometric crowding signal, supplementary)
+        alpha = float(os.environ.get("ALPHA_GRAD", 0.3))
+        beta  = float(os.environ.get("BETA_OPGRAD", 0.5))
+        gamma = float(os.environ.get("GAMMA_DENSITY", 0.2))
+
+        importance = alpha * grad_active + beta * op_grad + gamma * (1.0 - density)
         importance = torch.clamp(importance, 0.0, 1.0)
 
         return importance

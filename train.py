@@ -86,6 +86,10 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         loss = Ll1 + opt.lambda_dssim * (1.0 - ssim_value)
         
         loss.backward()
+
+        # Cache opacity gradient for functional redundancy measurement
+        gaussians.cache_opacity_gradient()
+
         iter_end.record()
 
         with torch.no_grad():
