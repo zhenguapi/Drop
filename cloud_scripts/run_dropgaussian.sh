@@ -8,16 +8,16 @@
 #
 # 用法: bash run_dropgaussian.sh [quick|full]
 #   quick: 单场景快速验证 (~10min, 10000 iter)
-#   full:  全量复现 (默认, 30000 iter)
+#   full:  全量复现 (默认, 10000 iter)
 # 数据集路径按云实例实际情况修改 DATASET_LLFF / DATASET_MIP
 # ============================================================
 set -e
 
 MODE=${1:-full}
-DATASET_LLFF="dataset/nerf_llff_data"
-DATASET_MIP="dataset/mipnerf360"
-N_ITERATIONS=30000
-cd /opt/Sparse_View/DropGaussian_release
+DATASET_LLFF="/root/autodl-tmp/nerf_llff_data"
+DATASET_MIP="/root/autodl-tmp/Mip-NeRF360/360_v2"
+N_ITERATIONS=10000
+cd /root/DropGaussian_release
 
 source $(conda info --base)/etc/profile.d/conda.sh
 conda activate DDGS

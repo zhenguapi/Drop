@@ -40,11 +40,11 @@ ALPHAS[all_three]=0.3
 BETAS[all_three]=0.5
 GAMMAS[all_three]=0.2
 
-DATASET="dataset/nerf_llff_data"
+DATASET="/root/autodl-tmp/nerf_llff_data"
 N_VIEWS=3
 N_ITER=10000
 
-cd /opt/Sparse_View/DropGaussian_release
+cd /root/DropGaussian_release
 
 source $(conda info --base)/etc/profile.d/conda.sh
 conda activate DDGS
