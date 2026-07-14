@@ -1,9 +1,14 @@
 #!/bin/bash
 # ============================================================
 # DropGaussian 完整复现脚本 (LLFF + Mip-NeRF360)
+#
+# 注意: 当前代码已包含自适应 dropout (v2) 改动。
+# 如需原始 DropGaussian baseline，请 checkout 原始 commit:
+#   git stash && git checkout <original_commit_hash>
+#
 # 用法: bash run_dropgaussian.sh [quick|full]
-#   quick: 单场景快速验证 (~15min)
-#   full:  全量复现 (默认)
+#   quick: 单场景快速验证 (~10min, 10000 iter)
+#   full:  全量复现 (默认, 30000 iter)
 # 数据集路径按云实例实际情况修改 DATASET_LLFF / DATASET_MIP
 # ============================================================
 set -e
@@ -22,9 +27,10 @@ if [ "$MODE" == "quick" ]; then
     python train.py \
         -s $DATASET_LLFF/fern/ \
         -m output/quick/fern \
-        --eval -r 8 --n_views 3 --iterations 7000
+        --eval -r 8 --n_views 3 --iterations 10000
     python render.py -m output/quick/fern --eval -r 8
-    echo "查看结果: cat output/quick/fern/results.json"
+    python metric.py --path output/quick --iteration 10000
+    echo "查看结果: cat output/quick/results.json"
     exit 0
 fi
 
@@ -44,7 +50,7 @@ for scene in "${LLFF_SCENES[@]}"; do
     python render.py -m output/$EXP/$scene --eval -r 8
 done
 
-python metric.py --path output/$EXP
+python metric.py --path output/$EXP --iteration $N_ITERATIONS
 echo "[DONE] LLFF 全部完成"
 
 # ============ 完整 Mip-NeRF360 ============
@@ -63,7 +69,7 @@ for scene in "${MIP_SCENES[@]}"; do
     python render.py -m output/$EXP/$scene --eval -r 8
 done
 
-python metric.py --path output/$EXP
+python metric.py --path output/$EXP --iteration $N_ITERATIONS
 echo "[DONE] Mip-NeRF360 全部完成"
 
 echo ""
