@@ -1,0 +1,72 @@
+#!/bin/bash
+# ============================================================
+# DropGaussian 完整复现脚本 (LLFF + Mip-NeRF360)
+# 用法: bash run_dropgaussian.sh [quick|full]
+#   quick: 单场景快速验证 (~15min)
+#   full:  全量复现 (默认)
+# 数据集路径按云实例实际情况修改 DATASET_LLFF / DATASET_MIP
+# ============================================================
+set -e
+
+MODE=${1:-full}
+DATASET_LLFF="dataset/nerf_llff_data"
+DATASET_MIP="dataset/mipnerf360"
+N_ITERATIONS=30000
+cd /opt/Sparse_View/DropGaussian_release
+
+source $(conda info --base)/etc/profile.d/conda.sh
+conda activate DDGS
+
+if [ "$MODE" == "quick" ]; then
+    echo "===== [QUICK] DropGaussian 快速验证: LLFF fern ====="
+    python train.py \
+        -s $DATASET_LLFF/fern/ \
+        -m output/quick/fern \
+        --eval -r 8 --n_views 3 --iterations 7000
+    python render.py -m output/quick/fern --eval -r 8
+    echo "查看结果: cat output/quick/fern/results.json"
+    exit 0
+fi
+
+# ============ 完整 LLFF ============
+echo "===== [FULL] DropGaussian on LLFF (3-view, 8 scenes) ====="
+LLFF_SCENES=("fern" "flower" "fortress" "horns" "leaves" "orchids" "room" "trex")
+EXP="llff_full"
+
+for scene in "${LLFF_SCENES[@]}"; do
+    echo "--- Training: $scene ---"
+    python train.py \
+        -s $DATASET_LLFF/$scene/ \
+        -m output/$EXP/$scene \
+        --eval -r 8 --n_views 3 --iterations $N_ITERATIONS
+
+    echo "--- Rendering: $scene ---"
+    python render.py -m output/$EXP/$scene --eval -r 8
+done
+
+python metric.py --path output/$EXP
+echo "[DONE] LLFF 全部完成"
+
+# ============ 完整 Mip-NeRF360 ============
+echo "===== [FULL] DropGaussian on Mip-NeRF360 (12-view, 7 scenes) ====="
+MIP_SCENES=("bicycle" "bonsai" "counter" "garden" "kitchen" "room" "stump")
+EXP="mip_full"
+
+for scene in "${MIP_SCENES[@]}"; do
+    echo "--- Training: $scene ---"
+    python train.py \
+        -s $DATASET_MIP/$scene/ \
+        -m output/$EXP/$scene \
+        --eval -r 8 --n_views 12 --iterations $N_ITERATIONS
+
+    echo "--- Rendering: $scene ---"
+    python render.py -m output/$EXP/$scene --eval -r 8
+done
+
+python metric.py --path output/$EXP
+echo "[DONE] Mip-NeRF360 全部完成"
+
+echo ""
+echo "===== DropGaussian 复现完成 ====="
+echo "LLFF results:   output/llff_full/results.json"
+echo "Mip360 results: output/mip_full/results.json"
