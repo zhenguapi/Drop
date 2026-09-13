@@ -29,6 +29,10 @@ importance = α × position_grad + β × opacity_grad + γ × (1 - density)
 
 ## 目录结构（云实例上）
 
+> ⚠️ **更正（2026-09-13，T0 决议⑥）**：下图中的 `/opt/Sparse_View/` + `dataset/` 是旧版写法，与脚本实际路径不符。
+> **以各脚本头部变量为准**：代码 `/root/DropGaussian_release`，数据集 `/root/autodl-tmp/nerf_llff_data`（LLFF）、
+> `/root/autodl-tmp/Mip-NeRF360/360_v2`（Mip-NeRF360），conda 环境 `DDGS`。另见 `AGENTS.md` §2。原图保留如下：
+
 ```
 /opt/Sparse_View/
 ├── DropGaussian_release/    # DropGaussian 代码（已含 v2 自适应 dropout）
