@@ -73,16 +73,16 @@ for exp in "${EXPERIMENTS[@]}"; do
         python render.py -m output/ablation_v2/$exp/$scene --eval -r 8
 
         # Quick score
-        result_file="output/ablation_v2/$exp/$scene/results.json"
-        if [ -f "$result_file" ]; then
-            psnr=$(python -c "import json; print(json.load(open('$result_file')).get('PSNR', 'N/A'))" 2>/dev/null)
+        metrics_file="output/ablation_v2/$exp/$scene/metrics_${N_ITER}.txt"
+        if [ -f "$metrics_file" ]; then
+            psnr=$(head -1 "$metrics_file" | sed 's/[^0-9.]//g')
             echo "  → PSNR: $psnr"
         fi
     done
 done
 
 # ============================================================
-# 生成 metrics (results.json)
+# 生成 metrics (metrics_mean.txt)
 # ============================================================
 echo ""
 echo "===== 生成 metrics ====="
@@ -112,9 +112,9 @@ echo ""
 for scene in "${SCENES[@]}"; do
     printf "%-14s" "$scene"
     for exp in "${EXPERIMENTS[@]}"; do
-        f="output/ablation_v2/$exp/$scene/results.json"
+        f="output/ablation_v2/$exp/$scene/metrics_${N_ITER}.txt"
         if [ -f "$f" ]; then
-            psnr=$(python -c "import json; print(f'{json.load(open(\"$f\")).get(\"PSNR\",0):.2f}')" 2>/dev/null || echo "  N/A")
+            psnr=$(head -1 "$f" | sed 's/[^0-9.]//g')
             printf "%-14s" "$psnr"
         else
             printf "%-14s" "N/A"

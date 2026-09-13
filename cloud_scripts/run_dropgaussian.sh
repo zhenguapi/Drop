@@ -30,7 +30,7 @@ if [ "$MODE" == "quick" ]; then
         --eval -r 8 --n_views 3 --iterations 10000
     python render.py -m output/quick/fern --eval -r 8
     python metric.py --path output/quick --iteration 10000
-    echo "查看结果: cat output/quick/results.json"
+    echo "查看结果: cat output/quick/metrics_mean.txt"
     exit 0
 fi
 
@@ -74,5 +74,5 @@ echo "[DONE] Mip-NeRF360 全部完成"
 
 echo ""
 echo "===== DropGaussian 复现完成 ====="
-echo "LLFF results:   output/llff_full/results.json"
-echo "Mip360 results: output/mip_full/results.json"
+echo "LLFF results:   output/llff_full/metrics_mean.txt"
+echo "Mip360 results: output/mip_full/metrics_mean.txt"
