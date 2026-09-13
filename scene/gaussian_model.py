@@ -495,7 +495,14 @@ class GaussianModel:
         beta  = float(os.environ.get("BETA_OPGRAD", 0.5))
         gamma = float(os.environ.get("GAMMA_DENSITY", 0.2))
 
-        importance = alpha * grad_active + beta * op_grad + gamma * (1.0 - density)
+        # Density direction control:
+        #   default (DENSITY_INVERT=0): high density → low importance (crowded → redundant)
+        #   invert (DENSITY_INVERT=1): high density → high importance (SfM-well-supported)
+        if os.environ.get("DENSITY_INVERT", "0") == "1":
+            density_term = density          # dense → important
+        else:
+            density_term = 1.0 - density    # dense → redundant (default)
+        importance = alpha * grad_active + beta * op_grad + gamma * density_term
         importance = torch.clamp(importance, 0.0, 1.0)
 
         return importance
