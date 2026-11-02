@@ -54,6 +54,10 @@ class GaussianModel:
         self.xyz_gradient_accum = torch.empty(0)
         self.denom = torch.empty(0)
         self.opacity_grad_cache = torch.empty(0)
+        # SfM support (T2): frozen initial SfM points + per-Gaussian support cache.
+        # Disabled by default; only populated when DELTA_SFM > 0.
+        self._sfm_xyz = None
+        self._sfm_support = torch.empty(0)
         self.optimizer = None
         self.percent_dense = 0
         self.spatial_lr_scale = 0
@@ -149,6 +153,15 @@ class GaussianModel:
         self._rotation = nn.Parameter(rots.requires_grad_(True))
         self._opacity = nn.Parameter(opacities.requires_grad_(True))
         self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")
+
+        # T2: keep a frozen copy of the initial SfM point cloud as the immutable
+        # reference frame for the SfM-support signal. The initial Gaussians are
+        # exactly the SfM points, so their support is 1 by definition.
+        self._sfm_xyz = None
+        self._sfm_support = torch.empty(0)
+        if float(os.environ.get("DELTA_SFM", 0.0)) > 0:
+            self._sfm_xyz = fused_point_cloud.detach().clone()
+            self._sfm_support = torch.ones((self.get_xyz.shape[0],), device="cuda")
 
     def training_setup(self, training_args):
         self.percent_dense = training_args.percent_dense
@@ -310,6 +323,12 @@ class GaussianModel:
         self.max_radii2D = self.max_radii2D[valid_points_mask]
         self.opacity_grad_cache = self.opacity_grad_cache[valid_points_mask]
 
+        # T2: keep the SfM-support cache aligned with the Gaussian set.
+        if self._sfm_support.numel() == valid_points_mask.shape[0]:
+            self._sfm_support = self._sfm_support[valid_points_mask]
+        else:
+            self._sfm_support = torch.empty(0)
+
     def cat_tensors_to_optimizer(self, tensors_dict):
         optimizable_tensors = {}
         for group in self.optimizer.param_groups:
@@ -333,6 +352,7 @@ class GaussianModel:
         return optimizable_tensors
 
     def densification_postfix(self, new_xyz, new_features_dc, new_features_rest, new_opacities, new_scaling, new_rotation):
+        old_n = self.get_xyz.shape[0]
         d = {"xyz": new_xyz,
         "f_dc": new_features_dc,
         "f_rest": new_features_rest,
@@ -354,6 +374,18 @@ class GaussianModel:
         self.max_radii2D = torch.cat([self.max_radii2D, torch.zeros(self.get_xyz.shape[0]-self.max_radii2D.shape[0]).to(self.max_radii2D)])
         # Opacity grad cache: reset for new Gaussians (they have 0 gradient history)
         self.opacity_grad_cache = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
+
+        # T2: recompute SfM support for newly created Gaussians only; existing
+        # Gaussians keep their last value (the reference frame is frozen, so the
+        # signal is intentionally static/stale rather than self-referential).
+        if self._sfm_xyz is not None:
+            new_xyz = self._xyz[old_n:]
+            new_support = self._compute_sfm_support(new_xyz)
+            if self._sfm_support.numel() == old_n:
+                old_support = self._sfm_support
+            else:
+                old_support = torch.ones((old_n,), device="cuda")
+            self._sfm_support = torch.cat([old_support, new_support], dim=0)
 
     def densify_and_split(self, grads, grad_threshold, scene_extent, N=2):
         n_init_points = self.get_xyz.shape[0]
@@ -415,6 +447,27 @@ class GaussianModel:
         self.xyz_gradient_accum[update_filter] += torch.norm(viewspace_point_tensor.grad[update_filter,:2], dim=-1, keepdim=True)
         self.denom[update_filter] += 1
 
+    @torch.no_grad()
+    def _compute_sfm_support(self, xyz):
+        """Distance from each Gaussian to its nearest frozen SfM point.
+
+        Returns support in (0, 1]: 1 = on an SfM point, smaller = farther from
+        observed geometry. Uses chunked cdist so memory stays bounded even when
+        the Gaussian set grows to ~1M.
+        """
+        if self._sfm_xyz is None or self._sfm_xyz.numel() == 0:
+            return torch.zeros((xyz.shape[0],), device=xyz.device)
+
+        m = self._sfm_xyz.shape[0]
+        # Cap each chunk at ~20M distances (80 MB fp32).
+        chunk = max(512, min(8192, int(2e7 / max(m, 1))))
+        mins = []
+        for i in range(0, xyz.shape[0], chunk):
+            d = torch.cdist(xyz[i:i + chunk], self._sfm_xyz)
+            mins.append(d.min(dim=1).values)
+        dist = torch.cat(mins, dim=0)
+        return 1.0 / (1.0 + dist)
+
     def cache_opacity_gradient(self, ema_decay=0.9):
         """
         Cache the current opacity gradient with EMA smoothing.
@@ -438,10 +491,15 @@ class GaussianModel:
         """
         Compute per-Gaussian importance scores for adaptive dropout.
 
-        Three signals, all without external priors:
+        Three core signals, all without external priors:
         1. Position gradient activity: large view-space gradient → actively learning geometry → important
         2. Opacity gradient (functional redundancy): large |∂L/∂α| → unique contribution, hard to replace
         3. Local density: small nearest-neighbor distance → crowded → potentially redundant
+
+        Optional fourth signal (DELTA_SFM > 0):
+        4. SfM support: distance to the frozen initial SfM point cloud; small
+           distance → observed/supported → important. Replaces the density term
+           when used as v1_sfm (set GAMMA_DENSITY=0 in the runner).
 
         Returns:
             importance: Tensor of shape (N,) in [0, 1], higher = more important
@@ -494,6 +552,7 @@ class GaussianModel:
         alpha = float(os.environ.get("ALPHA_GRAD", 0.3))
         beta  = float(os.environ.get("BETA_OPGRAD", 0.5))
         gamma = float(os.environ.get("GAMMA_DENSITY", 0.2))
+        delta = float(os.environ.get("DELTA_SFM", 0.0))
 
         # Density direction control:
         #   default (DENSITY_INVERT=0): high density → low importance (crowded → redundant)
@@ -503,6 +562,23 @@ class GaussianModel:
         else:
             density_term = 1.0 - density    # dense → redundant (default)
         importance = alpha * grad_active + beta * op_grad + gamma * density_term
+
+        # T2 optional SfM-support term. Keep the default path bitwise identical:
+        # when DELTA_SFM == 0, no extra tensor ops are performed.
+        if delta > 0:
+            if self._sfm_support.numel() != N:
+                if self._sfm_xyz is not None:
+                    self._sfm_support = self._compute_sfm_support(self.get_xyz)
+                else:
+                    self._sfm_support = torch.zeros(N, device="cuda")
+            sfm_support = self._sfm_support
+            s_max = sfm_support.max()
+            if s_max > 1e-8:
+                sfm_support = sfm_support / s_max
+            else:
+                sfm_support = torch.zeros(N, device="cuda")
+            importance = importance + delta * sfm_support
+
         importance = torch.clamp(importance, 0.0, 1.0)
 
         return importance

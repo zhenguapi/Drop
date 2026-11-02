@@ -37,6 +37,7 @@
 | `run_dropgaussian.sh` | baseline 复现（LLFF + Mip360） | `bash cloud_scripts/run_dropgaussian.sh quick\|full` |
 | `run_ablation_llff.sh` | v2 消融，8 场景 × 4 配置 = 32 runs | `bash cloud_scripts/run_ablation_llff.sh` |
 | `run_falsification.sh` | **Step 1 密度方向证伪**，4 场景 × 2 配置 = 8 runs | `bash cloud_scripts/run_falsification.sh` |
+| `run_sfm_support.sh` | **T2 SfM support 消融**，4 场景 × 3 配置 = 12 runs | `bash cloud_scripts/run_sfm_support.sh` |
 
 统一运行方式：`bash cloud_scripts/<脚本>.sh 2>&1 | tee logs/<名>_$(date +%m%d_%H%M).log`
 
@@ -48,6 +49,7 @@
 | `BETA_OPGRAD` | opacity 梯度权重 β | 0.5 |
 | `GAMMA_DENSITY` | 几何密度权重 γ | 0.2 |
 | `DENSITY_INVERT` | 密度项方向反转（1 = 密集→重要） | 0 |
+| `DELTA_SFM` | SfM support 权重 δ（T2；0 = 关闭，默认行为不变） | 0 |
 
 ## 5. AI 行为准则（硬约束）
 
@@ -59,8 +61,9 @@
 6. 跑完回传：`output/<exp>/**/metrics_*.txt`、完整日志、如有代码改动 → `git diff`；渲染图像只按需回传
 7. commit 信息必须如实描述实现内容（历史教训：`9f57d83` 信息与实现不符）
 
-## 6. 当前状态（2026-09-13）
+## 6. 当前状态（2026-11-02）
 
-- **待执行**：Step 1 密度方向证伪（`run_falsification.sh` 就绪，判定标准见脚本末尾注释）
-- **之后**：视判定结果进入 SfM support 实现（约 20 行）或直接进入主实验
-- **禁止**：在本仓库内混跑其他 baseline 仓库的代码（对比实验用各自仓库与环境）
+- **T1 已完成**：8/8 runs，结论中间态/部分支持（horns +0.376 达阈值，flower +0.132 未达；trex −0.838，room +0.123；均值 −0.052）。详见本地 T1 output。
+- **T2 进行中**：`DELTA_SFM` 第四信号已实现（默认 0，关闭时行为不变）；`run_sfm_support.sh` 就绪，待云端跑 4 场景 × 3 配置。
+- **环境**：新实例 RTX 3080 Ti 12GB；`simple-knn`/光栅化扩展已用 CUDA 12.4 重建；根盘空间紧，实验输出建议放 `/root/autodl-tmp/`。
+- **禁止**：在本仓库内混跑其他 baseline 仓库的代码（对比实验用各自仓库与环境）。
