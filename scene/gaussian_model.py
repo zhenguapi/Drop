@@ -457,6 +457,8 @@ class GaussianModel:
         """
         if self._sfm_xyz is None or self._sfm_xyz.numel() == 0:
             return torch.zeros((xyz.shape[0],), device=xyz.device)
+        if xyz.shape[0] == 0:
+            return torch.zeros((0,), device=xyz.device)
 
         m = self._sfm_xyz.shape[0]
         # Cap each chunk at ~20M distances (80 MB fp32).
